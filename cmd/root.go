@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -83,6 +84,11 @@ func NewRootCmd(deps Deps) *cobra.Command {
 
 			seed := uint64(deps.Now().UnixNano())
 			if err := run(cmd.Context(), deps, user, defaultWeeks, fromPtr, toPtr, seed, speed); err != nil {
+				var unf *github.UserNotFoundError
+				if errors.As(err, &unf) {
+					// Don't print auth hints for this case; make it explicit.
+					return fmt.Errorf("GitHub user %q was not found", unf.Login)
+				}
 				fmt.Fprintln(deps.Stderr, "hint: ensure you're logged in: `gh auth login`")
 				return err
 			}

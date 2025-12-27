@@ -85,7 +85,7 @@ query($from: DateTime!, $to: DateTime!) {
 		} `json:"viewer"`
 	}
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"from": from.UTC(),
 		"to":   to.UTC(),
 	}
@@ -124,17 +124,20 @@ query($login: String!, $from: DateTime!, $to: DateTime!) {
 		} `json:"user"`
 	}
 
-	vars := map[string]interface{}{
+	vars := map[string]any{
 		"login": login,
 		"from":  from.UTC(),
 		"to":    to.UTC(),
 	}
 
 	if err := client.DoWithContext(ctx, query, vars, &resp); err != nil {
+		if isGraphQLUserNotFound(err) {
+			return "", Calendar{}, &UserNotFoundError{Login: login, cause: err}
+		}
 		return "", Calendar{}, err
 	}
 	if resp.User == nil || resp.User.Login == "" {
-		return "", Calendar{}, fmt.Errorf("user %q not found", login)
+		return "", Calendar{}, &UserNotFoundError{Login: login}
 	}
 	return resp.User.Login, resp.User.ContributionsCollection.ContributionCalendar, nil
 }
