@@ -6,6 +6,8 @@ import (
 	"github.com/fchimpan/gh-kusa-breaker/internal/github"
 )
 
+const daysPerWeek = 7
+
 type BrickCell struct {
 	Count int
 	HP    int
@@ -27,13 +29,7 @@ func HPFromCount(count, maxCount int) int {
 	if maxCount <= 0 {
 		return 1
 	}
-	hp := int(math.Ceil(4.0 * float64(count) / float64(maxCount)))
-	if hp < 1 {
-		hp = 1
-	}
-	if hp > 4 {
-		hp = 4
-	}
+	hp := min(max(int(math.Ceil(4.0*float64(count)/float64(maxCount))), 1), 4)
 	return hp
 }
 
@@ -48,7 +44,7 @@ func BuildBrickGrid(cal github.Calendar, maxCols int) BrickGrid {
 		maxCols = 1
 	}
 	if len(weeks) == 0 {
-		return BrickGrid{Rows: 7, Cols: 0, Cells: make([][]BrickCell, 7)}
+		return BrickGrid{Rows: daysPerWeek, Cols: 0, Cells: make([][]BrickCell, daysPerWeek)}
 	}
 
 	cols := len(weeks)
@@ -56,8 +52,8 @@ func BuildBrickGrid(cal github.Calendar, maxCols int) BrickGrid {
 		cols = maxCols
 	}
 
-	cells := make([][]BrickCell, 7)
-	for r := 0; r < 7; r++ {
+	cells := make([][]BrickCell, daysPerWeek)
+	for r := range daysPerWeek {
 		cells[r] = make([]BrickCell, cols)
 	}
 
@@ -66,7 +62,7 @@ func BuildBrickGrid(cal github.Calendar, maxCols int) BrickGrid {
 		col := (wi * cols) / len(weeks)
 		for _, d := range w.ContributionDays {
 			r := d.Weekday
-			if r < 0 || r >= 7 {
+			if r < 0 || r >= daysPerWeek {
 				continue
 			}
 			if d.ContributionCount > cells[r][col].Count {
@@ -76,7 +72,7 @@ func BuildBrickGrid(cal github.Calendar, maxCols int) BrickGrid {
 	}
 
 	maxCount := 0
-	for r := 0; r < 7; r++ {
+	for r := range daysPerWeek {
 		for c := 0; c < cols; c++ {
 			if cells[r][c].Count > maxCount {
 				maxCount = cells[r][c].Count
@@ -84,14 +80,14 @@ func BuildBrickGrid(cal github.Calendar, maxCols int) BrickGrid {
 		}
 	}
 
-	for r := 0; r < 7; r++ {
+	for r := range daysPerWeek {
 		for c := 0; c < cols; c++ {
 			cells[r][c].HP = HPFromCount(cells[r][c].Count, maxCount)
 		}
 	}
 
 	return BrickGrid{
-		Rows:     7,
+		Rows:     daysPerWeek,
 		Cols:     cols,
 		MaxCount: maxCount,
 		Cells:    cells,

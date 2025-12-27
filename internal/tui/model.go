@@ -54,6 +54,9 @@ type Model struct {
 	introAcc         float64 // seconds accumulated toward next column
 	introStep        float64 // seconds per column
 	introDone        bool    // only run once per app launch
+
+	// When there are no bricks at all (no contributions), we should not treat it as CLEAR.
+	noBricks bool
 }
 
 // baseSpeedMultiplier defines what "1.0x" means in this game.
@@ -119,7 +122,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		const fixed = 1.0 / 120.0
 		const maxStepsPerTick = 10
 
-		if m.ready && !m.introActive && !m.state.Cleared && !m.state.GameOver {
+		if m.ready && !m.introActive && !m.noBricks && !m.state.Cleared && !m.state.GameOver {
 			steps := 0
 			for m.acc >= fixed && steps < maxStepsPerTick {
 				m.state.Step(fixed, game.Input{Move: m.move})
@@ -143,12 +146,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "+", "=":
-			m.speed += 0.25
+			m.speed += 0.1
 			if m.speed > 5 {
 				m.speed = 5
 			}
 		case "-", "_":
-			m.speed -= 0.25
+			m.speed -= 0.1
 			if m.speed < 0.25 {
 				m.speed = 0.25
 			}
@@ -175,6 +178,9 @@ func (m *Model) frameDuration() time.Duration {
 	if m.introActive {
 		return time.Second / 60
 	}
+	if m.noBricks {
+		return time.Second / 15
+	}
 	if m.state.GameOver {
 		return time.Second / 15
 	}
@@ -187,10 +193,7 @@ func (m *Model) frameDuration() time.Duration {
 func (m *Model) rebuild() {
 	// Keep a couple columns for padding.
 	cellW := 2
-	maxCols := (m.w - 2) / cellW
-	if maxCols < 1 {
-		maxCols = 1
-	}
+	maxCols := max((m.w-2)/cellW, 1)
 
 	m.grid = mapping.BuildBrickGrid(m.cal, maxCols)
 
@@ -205,9 +208,7 @@ func (m *Model) rebuild() {
 	}
 
 	m.state = game.NewState(m.grid, gameW, gameH, m.seed)
-	if m.state.BricksRemaining <= 0 {
-		m.state.Cleared = true
-	}
+	m.noBricks = m.state.BricksRemaining <= 0
 	m.lastTick = time.Time{}
 	m.acc = 0
 	m.confetti = nil
@@ -226,7 +227,7 @@ func (m *Model) rebuild() {
 	m.introVisibleCols = 0
 	m.introAcc = 0
 	m.introStep = 0
-	if !m.introDone && !m.state.Cleared && m.state.BricksRemaining > 0 {
+	if !m.introDone && !m.noBricks && !m.state.Cleared && m.state.BricksRemaining > 0 {
 		cols := 0
 		if len(m.state.Bricks) > 0 {
 			cols = len(m.state.Bricks[0])
@@ -267,9 +268,7 @@ func (m *Model) resetGame() {
 	}
 
 	m.state = game.NewState(m.grid, gameW, gameH, m.seed)
-	if m.state.BricksRemaining <= 0 {
-		m.state.Cleared = true
-	}
+	m.noBricks = m.state.BricksRemaining <= 0
 	m.lastTick = time.Time{}
 	m.acc = 0
 	m.confetti = nil
@@ -292,6 +291,8 @@ func (m *Model) View() string {
 	infoLine := ""
 	if m.introActive {
 		infoLine = "starting..."
+	} else if m.noBricks {
+		infoLine = "no contributions found (q quit)"
 	} else if m.state.Cleared {
 		infoLine = "CLEAR! all blocks removed. (r retry, q quit)"
 	} else if m.state.GameOver {
@@ -349,11 +350,21 @@ func (m *Model) View() string {
 	}
 
 	var overlay *fieldOverlay
-	if m.state.GameOver {
+	if m.noBricks {
+		overlay = &fieldOverlay{
+			Title: "NO CONTRIBUTIONS",
+			Lines: []string{
+				"no blocks to break.",
+				fmt.Sprintf("user: %s", m.login),
+				"try a different user/range, or contribute!",
+			},
+			Footer: "press q to quit",
+		}
+	} else if m.state.GameOver {
 		overlay = &fieldOverlay{
 			Title: "GAME OVER...",
 			Lines: []string{
-				fmt.Sprintf("score: %d", m.state.Score),
+				fmt.Sprintf("score: %8d", m.state.Score),
 				fmt.Sprintf("user: %s", m.login),
 			},
 			Footer: "press r to retry, q to quit",
@@ -363,7 +374,7 @@ func (m *Model) View() string {
 			Title: "CLEAR!  WAIWAI FESTIVAL",
 			Lines: []string{
 				"nice break!",
-				fmt.Sprintf("score: %d", m.state.Score),
+				fmt.Sprintf("score: %8d", m.state.Score),
 				fmt.Sprintf("user: %s", m.login),
 				"thank you for playing!",
 			},
@@ -439,13 +450,7 @@ func renderHUD(login string, score, remaining, total int, speed float64) string 
 	if remaining < 0 {
 		remaining = 0
 	}
-	done := total - remaining
-	if done < 0 {
-		done = 0
-	}
-	if done > total {
-		done = total
-	}
+	done := min(max(total-remaining, 0), total)
 
 	barW := 18
 	fill := 0
@@ -466,9 +471,9 @@ func renderHUD(login string, score, remaining, total int, speed float64) string 
 	return strings.Join([]string{
 		styleHudLabel.Render("user ") + styleHudValue.Render(login),
 		sep,
-		styleHudLabel.Render("score ") + styleHudScore.Render(fmt.Sprintf("%d", score)),
+		styleHudLabel.Render("score ") + styleHudScore.Render(fmt.Sprintf("%8d", score)),
 		sep,
-		styleHudLabel.Render("blocks ") + styleHudValue.Render(fmt.Sprintf("%d/%d", remaining, total)) + " " + bar,
+		styleHudLabel.Render("blocks ") + styleHudValue.Render(fmt.Sprintf("%4d/%4d", remaining, total)) + " " + bar,
 		sep,
 		styleHudLabel.Render("speed ") + styleHudValue.Render(fmt.Sprintf("%.2fx", speed)),
 		styleHudDim.Render("  (←/→ a/d h/l, r retry, +/- speed, q quit)"),
@@ -654,7 +659,7 @@ func renderFieldFastTo(b *bytes.Buffer, s game.State, clearEOL string, leftPad s
 			row := s.Bricks[r]
 			// If the ball is on this brick row, render per-char so we can overlay it.
 			if y == by && bx >= 0 && bx < w {
-				for x := 0; x < w; x++ {
+				for x := range w {
 					if x == bx {
 						b.WriteString(ballCell)
 						continue
