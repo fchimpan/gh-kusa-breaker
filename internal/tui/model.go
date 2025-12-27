@@ -45,11 +45,20 @@ type Model struct {
 	spaceLineW int
 
 	overlayCanvas canvasBuf
+
+	// Startup intro animation: reveal brick columns from left to right,
+	// then start the simulation.
+	introActive      bool
+	introTotalCols   int
+	introVisibleCols int
+	introAcc         float64 // seconds accumulated toward next column
+	introStep        float64 // seconds per column
+	introDone        bool    // only run once per app launch
 }
 
 // baseSpeedMultiplier defines what "1.0x" means in this game.
-// Historically, 1.5x felt better, so we bake that in as the baseline.
-const baseSpeedMultiplier = 1.5
+// Historically, 1.25x felt better, so we bake that in as the baseline.
+const baseSpeedMultiplier = 1.25
 
 func NewModel(login string, cal github.Calendar, seed uint64, speed float64) *Model {
 	if speed <= 0 {
@@ -102,6 +111,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.updateParty(dt)
+		m.updateIntro(dt)
 
 		// Fixed timestep simulation (more stable collisions than variable-dt).
 		// speed is a user-facing multiplier; baseSpeedMultiplier defines what "1.0x" means.
@@ -109,7 +119,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		const fixed = 1.0 / 120.0
 		const maxStepsPerTick = 10
 
-		if m.ready && !m.state.Cleared && !m.state.GameOver {
+		if m.ready && !m.introActive && !m.state.Cleared && !m.state.GameOver {
 			steps := 0
 			for m.acc >= fixed && steps < maxStepsPerTick {
 				m.state.Step(fixed, game.Input{Move: m.move})
@@ -128,7 +138,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "r", "R":
-			if m.ready {
+			if m.ready && !m.introActive {
 				m.resetGame()
 			}
 			return m, nil
@@ -143,9 +153,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.speed = 0.25
 			}
 		case "left", "h", "a", "H", "A":
-			m.move = -1
+			if !m.introActive {
+				m.move = -1
+			}
 		case "right", "l", "d", "L", "D":
-			m.move = 1
+			if !m.introActive {
+				m.move = 1
+			}
 		}
 		return m, nil
 	default:
@@ -156,6 +170,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) frameDuration() time.Duration {
 	// Bubble Tea drives View() on every message; avoid rendering 60fps when not needed.
 	if !m.ready {
+		return time.Second / 60
+	}
+	if m.introActive {
 		return time.Second / 60
 	}
 	if m.state.GameOver {
@@ -202,6 +219,36 @@ func (m *Model) rebuild() {
 		m.rng = rand.New(rand.NewPCG(m.seed, m.seed^0x9e3779b97f4a7c15))
 	}
 	m.ready = true
+
+	// (Re)initialize intro animation only once per app launch.
+	m.introActive = false
+	m.introTotalCols = 0
+	m.introVisibleCols = 0
+	m.introAcc = 0
+	m.introStep = 0
+	if !m.introDone && !m.state.Cleared && m.state.BricksRemaining > 0 {
+		cols := 0
+		if len(m.state.Bricks) > 0 {
+			cols = len(m.state.Bricks[0])
+		}
+		if cols > 0 {
+			// Target ~1.1s total, clamped per-column.
+			step := 1.1 / float64(cols)
+			if step < 0.01 {
+				step = 0.01
+			}
+			if step > 0.08 {
+				step = 0.08
+			}
+			m.introActive = true
+			m.introTotalCols = cols
+			m.introVisibleCols = 0
+			m.introAcc = 0
+			m.introStep = step
+		} else {
+			m.introDone = true
+		}
+	}
 }
 
 func (m *Model) resetGame() {
@@ -243,7 +290,9 @@ func (m *Model) View() string {
 
 	hud := renderHUD(m.login, m.state.Score, m.state.BricksRemaining, m.state.BricksTotal, m.speed)
 	infoLine := ""
-	if m.state.Cleared {
+	if m.introActive {
+		infoLine = "starting..."
+	} else if m.state.Cleared {
 		infoLine = "CLEAR! all blocks removed. (r retry, q quit)"
 	} else if m.state.GameOver {
 		infoLine = ""
@@ -333,7 +382,11 @@ func (m *Model) View() string {
 	}
 
 	if overlay == nil {
-		renderFieldFastTo(b, m.state, clearEOL, leftPadStr, m.spaceLine)
+		visibleCols := -1
+		if m.introActive {
+			visibleCols = m.introVisibleCols
+		}
+		renderFieldFastTo(b, m.state, clearEOL, leftPadStr, m.spaceLine, visibleCols)
 		b.WriteString("\n")
 	} else {
 		// Overlay path is only active on GameOver, where performance is less critical.
@@ -350,6 +403,28 @@ func (m *Model) View() string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+func (m *Model) updateIntro(dt float64) {
+	if !m.ready || !m.introActive {
+		return
+	}
+	if m.introTotalCols <= 0 || m.introStep <= 0 {
+		m.introActive = false
+		m.introDone = true
+		return
+	}
+
+	m.introAcc += dt
+	for m.introAcc >= m.introStep && m.introVisibleCols < m.introTotalCols {
+		m.introAcc -= m.introStep
+		m.introVisibleCols++
+	}
+	if m.introVisibleCols >= m.introTotalCols {
+		m.introVisibleCols = m.introTotalCols
+		m.introActive = false
+		m.introDone = true
+	}
 }
 
 func renderHUD(login string, score, remaining, total int, speed float64) string {
@@ -548,7 +623,7 @@ func hpCell1(hp int) string {
 	return brickCell1[hp]
 }
 
-func renderFieldFastTo(b *bytes.Buffer, s game.State, clearEOL string, leftPad string, spaceLine string) {
+func renderFieldFastTo(b *bytes.Buffer, s game.State, clearEOL string, leftPad string, spaceLine string, visibleBrickCols int) {
 	w := s.Width
 	h := s.Height
 
@@ -560,6 +635,9 @@ func renderFieldFastTo(b *bytes.Buffer, s game.State, clearEOL string, leftPad s
 	cols := 0
 	if brickRows > 0 {
 		cols = len(s.Bricks[0])
+	}
+	if visibleBrickCols >= cols {
+		visibleBrickCols = -1 // treat as "all"
 	}
 
 	py := int(s.PaddleY)
@@ -582,7 +660,7 @@ func renderFieldFastTo(b *bytes.Buffer, s game.State, clearEOL string, leftPad s
 						continue
 					}
 					c := x / s.BrickW
-					if c >= 0 && c < cols {
+					if c >= 0 && c < cols && (visibleBrickCols < 0 || c < visibleBrickCols) {
 						b.WriteString(hpCell1(row[c]))
 					} else {
 						b.WriteByte(' ')
@@ -590,7 +668,11 @@ func renderFieldFastTo(b *bytes.Buffer, s game.State, clearEOL string, leftPad s
 				}
 			} else {
 				for c := 0; c < cols; c++ {
-					b.WriteString(hpSpan2(row[c]))
+					if visibleBrickCols >= 0 && c >= visibleBrickCols {
+						b.WriteString("  ")
+					} else {
+						b.WriteString(hpSpan2(row[c]))
+					}
 				}
 			}
 			b.WriteString(clearEOL)
