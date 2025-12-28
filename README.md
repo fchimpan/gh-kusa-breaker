@@ -14,7 +14,7 @@ Play **Breakout** using your **GitHub contribution calendar** (“grass”) as t
 
 ## Requirements
 
-- **GitHub CLI**: `gh` 
+- **GitHub CLI** (`gh`) OR **GitHub Personal Access Token**
 
 ## Install
 
@@ -24,10 +24,16 @@ Play **Breakout** using your **GitHub contribution calendar** (“grass”) as t
 gh extension install fchimpan/gh-kusa-breaker
 ```
 
+### go install
+
+```bash
+go install github.com/fchimpan/gh-kusa-breaker/cmd/kusa-breaker@latest
+```
+
 ## Usage
 
 ```bash
-gh kusa-breaker -h
+kusa-breaker -h
 Play breakout using your GitHub contribution heatmap as bricks
 
 Usage:
@@ -41,16 +47,28 @@ Flags:
   -u, --user string   GitHub username to use (default: authenticated user)
 ```
 
-Authenticate first:
+### Authentication
+
+Choose one of the following methods:
+
+**Option 1: GitHub CLI (recommended for `gh extension` users)**
 
 ```bash
 gh auth login
 ```
 
-Run the game (uses your authenticated user by default):
+**Option 2: Personal Access Token (recommended for `go install` users)**
 
 ```bash
+export GITHUB_TOKEN=your_personal_access_token
+```
+
+```bash
+# If installed via gh extension
 gh kusa-breaker
+
+# If installed via go install
+kusa-breaker
 ```
 
 

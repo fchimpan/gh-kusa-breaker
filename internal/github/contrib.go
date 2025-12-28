@@ -1,8 +1,13 @@
 package github
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
 	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
@@ -57,7 +62,79 @@ func validateRange(from, to time.Time) error {
 	return nil
 }
 
-func fetchViewerContributionCalendarRange(ctx context.Context, client *api.GraphQLClient, from, to time.Time) (string, Calendar, error) {
+// graphqlRequest sends a GraphQL request to GitHub's API using GITHUB_TOKEN.
+func graphqlRequest(ctx context.Context, query string, variables map[string]any, result any) error {
+	token := os.Getenv("GITHUB_TOKEN")
+	if token == "" {
+		token = os.Getenv("GH_TOKEN")
+	}
+	if token == "" {
+		return fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable is not set")
+	}
+
+	payload := map[string]any{
+		"query":     query,
+		"variables": variables,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.github.com/graphql", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GitHub API error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var gqlResp struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(respBody, &gqlResp); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if len(gqlResp.Errors) > 0 {
+		return fmt.Errorf("GraphQL error: %s", gqlResp.Errors[0].Message)
+	}
+
+	if err := json.Unmarshal(gqlResp.Data, result); err != nil {
+		return fmt.Errorf("failed to parse data: %w", err)
+	}
+
+	return nil
+}
+
+// useTokenClient returns true if we should use the token-based client.
+func useTokenClient() bool {
+	return os.Getenv("GITHUB_TOKEN") != "" || os.Getenv("GH_TOKEN") != ""
+}
+
+func fetchViewerContributionCalendarRangeWithGh(ctx context.Context, from, to time.Time) (string, Calendar, error) {
+	client, err := api.DefaultGraphQLClient()
+	if err != nil {
+		return "", Calendar{}, err
+	}
+
 	query := `
 query($from: DateTime!, $to: DateTime!) {
   viewer {
@@ -96,7 +173,51 @@ query($from: DateTime!, $to: DateTime!) {
 	return resp.Viewer.Login, resp.Viewer.ContributionsCollection.ContributionCalendar, nil
 }
 
-func fetchUserContributionCalendarRange(ctx context.Context, client *api.GraphQLClient, login string, from, to time.Time) (string, Calendar, error) {
+func fetchViewerContributionCalendarRangeWithToken(ctx context.Context, from, to time.Time) (string, Calendar, error) {
+	query := `
+query($from: DateTime!, $to: DateTime!) {
+  viewer {
+    login
+    contributionsCollection(from: $from, to: $to) {
+      contributionCalendar {
+        weeks {
+          contributionDays {
+            date
+            weekday
+            contributionCount
+          }
+        }
+      }
+    }
+  }
+}`
+
+	var resp struct {
+		Viewer struct {
+			Login                   string `json:"login"`
+			ContributionsCollection struct {
+				ContributionCalendar Calendar `json:"contributionCalendar"`
+			} `json:"contributionsCollection"`
+		} `json:"viewer"`
+	}
+
+	vars := map[string]any{
+		"from": from.UTC().Format(time.RFC3339),
+		"to":   to.UTC().Format(time.RFC3339),
+	}
+
+	if err := graphqlRequest(ctx, query, vars, &resp); err != nil {
+		return "", Calendar{}, err
+	}
+	return resp.Viewer.Login, resp.Viewer.ContributionsCollection.ContributionCalendar, nil
+}
+
+func fetchUserContributionCalendarRangeWithGh(ctx context.Context, login string, from, to time.Time) (string, Calendar, error) {
+	client, err := api.DefaultGraphQLClient()
+	if err != nil {
+		return "", Calendar{}, err
+	}
+
 	query := `
 query($login: String!, $from: DateTime!, $to: DateTime!) {
   user(login: $login) {
@@ -142,6 +263,52 @@ query($login: String!, $from: DateTime!, $to: DateTime!) {
 	return resp.User.Login, resp.User.ContributionsCollection.ContributionCalendar, nil
 }
 
+func fetchUserContributionCalendarRangeWithToken(ctx context.Context, login string, from, to time.Time) (string, Calendar, error) {
+	query := `
+query($login: String!, $from: DateTime!, $to: DateTime!) {
+  user(login: $login) {
+    login
+    contributionsCollection(from: $from, to: $to) {
+      contributionCalendar {
+        weeks {
+          contributionDays {
+            date
+            weekday
+            contributionCount
+          }
+        }
+      }
+    }
+  }
+}`
+
+	var resp struct {
+		User *struct {
+			Login                   string `json:"login"`
+			ContributionsCollection struct {
+				ContributionCalendar Calendar `json:"contributionCalendar"`
+			} `json:"contributionsCollection"`
+		} `json:"user"`
+	}
+
+	vars := map[string]any{
+		"login": login,
+		"from":  from.UTC().Format(time.RFC3339),
+		"to":    to.UTC().Format(time.RFC3339),
+	}
+
+	if err := graphqlRequest(ctx, query, vars, &resp); err != nil {
+		if isGraphQLUserNotFound(err) {
+			return "", Calendar{}, &UserNotFoundError{Login: login, cause: err}
+		}
+		return "", Calendar{}, err
+	}
+	if resp.User == nil || resp.User.Login == "" {
+		return "", Calendar{}, &UserNotFoundError{Login: login}
+	}
+	return resp.User.Login, resp.User.ContributionsCollection.ContributionCalendar, nil
+}
+
 // FetchViewerContributionCalendar returns the logged-in user's login and a contribution calendar
 // covering the past N weeks ending now.
 func FetchViewerContributionCalendar(ctx context.Context, weeks int) (string, Calendar, error) {
@@ -149,14 +316,13 @@ func FetchViewerContributionCalendar(ctx context.Context, weeks int) (string, Ca
 		return "", Calendar{}, err
 	}
 
-	client, err := api.DefaultGraphQLClient()
-	if err != nil {
-		return "", Calendar{}, err
-	}
-
 	to := time.Now().UTC()
 	from := to.AddDate(0, 0, -7*weeks)
-	return fetchViewerContributionCalendarRange(ctx, client, from, to)
+
+	if useTokenClient() {
+		return fetchViewerContributionCalendarRangeWithToken(ctx, from, to)
+	}
+	return fetchViewerContributionCalendarRangeWithGh(ctx, from, to)
 }
 
 // FetchUserContributionCalendar returns the given user's login and a contribution calendar
@@ -171,14 +337,13 @@ func FetchUserContributionCalendar(ctx context.Context, login string, weeks int)
 		return "", Calendar{}, err
 	}
 
-	client, err := api.DefaultGraphQLClient()
-	if err != nil {
-		return "", Calendar{}, err
-	}
-
 	to := time.Now().UTC()
 	from := to.AddDate(0, 0, -7*weeks)
-	return fetchUserContributionCalendarRange(ctx, client, login, from, to)
+
+	if useTokenClient() {
+		return fetchUserContributionCalendarRangeWithToken(ctx, login, from, to)
+	}
+	return fetchUserContributionCalendarRangeWithGh(ctx, login, from, to)
 }
 
 // FetchViewerContributionCalendarRange returns the logged-in user's login and a contribution calendar
@@ -187,11 +352,10 @@ func FetchViewerContributionCalendarRange(ctx context.Context, from, to time.Tim
 	if err := validateRange(from, to); err != nil {
 		return "", Calendar{}, err
 	}
-	client, err := api.DefaultGraphQLClient()
-	if err != nil {
-		return "", Calendar{}, err
+	if useTokenClient() {
+		return fetchViewerContributionCalendarRangeWithToken(ctx, from, to)
 	}
-	return fetchViewerContributionCalendarRange(ctx, client, from, to)
+	return fetchViewerContributionCalendarRangeWithGh(ctx, from, to)
 }
 
 // FetchUserContributionCalendarRange returns the given user's login and a contribution calendar
@@ -203,9 +367,8 @@ func FetchUserContributionCalendarRange(ctx context.Context, login string, from,
 	if err := validateRange(from, to); err != nil {
 		return "", Calendar{}, err
 	}
-	client, err := api.DefaultGraphQLClient()
-	if err != nil {
-		return "", Calendar{}, err
+	if useTokenClient() {
+		return fetchUserContributionCalendarRangeWithToken(ctx, login, from, to)
 	}
-	return fetchUserContributionCalendarRange(ctx, client, login, from, to)
+	return fetchUserContributionCalendarRangeWithGh(ctx, login, from, to)
 }

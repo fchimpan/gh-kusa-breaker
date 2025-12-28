@@ -89,7 +89,7 @@ func NewRootCmd(deps Deps) *cobra.Command {
 					// Don't print auth hints for this case; make it explicit.
 					return fmt.Errorf("GitHub user %q was not found", unf.Login)
 				}
-				fmt.Fprintln(deps.Stderr, "hint: ensure you're logged in: `gh auth login`")
+				fmt.Fprintln(deps.Stderr, "hint: set GITHUB_TOKEN environment variable or run `gh auth login`")
 				return err
 			}
 			return nil
