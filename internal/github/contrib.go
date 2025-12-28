@@ -69,7 +69,7 @@ func graphqlRequest(ctx context.Context, query string, variables map[string]any,
 		token = os.Getenv("GH_TOKEN")
 	}
 	if token == "" {
-		return fmt.Errorf("GITHUB_TOKEN or GH_TOKEN environment variable is not set")
+		return &AuthError{Message: "GITHUB_TOKEN or GH_TOKEN environment variable is not set"}
 	}
 
 	payload := map[string]any{
