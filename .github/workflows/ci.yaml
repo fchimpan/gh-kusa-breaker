@@ -63,4 +63,4 @@ jobs:
           if [ "${{ matrix.goos }}" = "windows" ]; then
             export EXT=".exe"
           fi
-          go build -v -o "gh-kusa-breaker-${{ matrix.goos }}-${{ matrix.goarch }}$EXT" ./cmd/kusa
+          go build -v -o "gh-kusa-breaker-${{ matrix.goos }}-${{ matrix.goarch }}$EXT" ./cmd/kusa-breaker
